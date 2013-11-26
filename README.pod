@@ -34,13 +34,14 @@ PerlX::TryCatch - Try::Tiny where return works as it ought to.
   my @r2 = revsort_file '/non/existent.file'; # empty list (no need to reverse)
   my @r3 = revsort_file '/dev/autofs';        # should throw exception on mac
                                               # and linux unless you're root.
+
 =head1 DESCRIPTION
 
-This is my attempt at pasting over the one major issue I have with Try::Tiny:
+This is my attempt at fixing the one major issue I have with L<Try::Tiny>:
 The fact that, despite *looking* like an actual language extension, it does
-not *behave* like one.
+not entirely I<behave> like one.
 
-Now, don't get me wrong. I <3 Try::Tiny a whole lot and use it all over the
+Now, don't get me wrong. I <3 L<Try::Tiny> a whole lot and use it all over the
 place. I've also read every line of that code and understand fully why it is
 the way it is. And it does everything it says on the tin quickly and reliably
 with 100% pure-perl, uses no compiled/XS extensions, nothing but core modules
@@ -49,7 +50,7 @@ and works on versions of perl back to 5.6!
 That is truly good stuff, and I don't want it to change, one bit.
 
 However, I hurt (just a little) inside whever I have to explain to somebody
-that using C<return> in a L<Try::Tiny> block does *not* leave the sub
+that using C<return> in a L<Try::Tiny> block does I<not> leave the sub
 containing the try block! Furthermore, it also annoys the non-perl hackers who
 I try to turn on to perl (and some are coming to like it!) when something they
 see as so basic simply doesn't DWIM. Some even understand *why* it works the
@@ -59,20 +60,26 @@ This module aims to do two things:
 
 =over 4
 
-=item Make the use of C<return> in a try-block DWIM
+=item *
+Make the use of C<return> in a try-block DWIM
 
-=item Eliminate the need for the terminating semicolon at the end of the try/catch/finally construct;
+=item *
+Eliminate the need for the terminating semicolon at the end of the
+try/catch/finally construct
 
 =back
 
-That's it, at least for now. Perhaps more can be glommed on. However, If I
-wanted all the functionality of TryCatch, (which is another amazing module for
-this sort of thing, BTW) I'd just use that instead. I could, but its
-dependencies are quite numerous and some rather heavy for my liking.
+That's it, at least for now. Perhaps more can be glued on. However, If I
+wanted all the functionality of L<TryCatch>, (which, BTW, is another amazing
+module and does what this one does plus a whole lot more) I'd just use that
+instead. I usually don't though, because its dependencies are quite numerous
+and somewhat heavy for my liking. It also uses much deeper magick than this
+module, which may or may not be a good thing.
 
-I hope to need the use of nothing outside of core-perl *except* for
-Devel::Declare and Try::Tiny. Devel::Declare does pull in a few deps, and it
-uses XS (and therefore requires a compiler) but I feel it's well worth it.
+This module should need the use of nothing outside of core-perl *except* for
+L<Devel::Declare> and L<Try::Tiny>. L<Devel::Declare> does pull in a few deps,
+and it uses XS (and therefore requires a compiler) but it's a stable, mature
+module that is now widely used and compatible with perls back to 5.8.1.
 
 =head1 LICENSE
 
