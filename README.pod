@@ -1,0 +1,89 @@
+
+=head1 NAME
+
+PerlX::TryCatch - Try::Tiny where return works as it ought to.
+
+(name still pending)
+
+=head1 SYNOPSIS
+
+  use PerlX::TryCatch; # exports try/catch/finally by default
+
+  sub revsort_file {
+    my ($file_name) = @_;
+
+    my $fh
+    try {
+      open my $fh, '<', $file_name or die "Couldn't open $file_name: $!";
+      my @sorted = sort <$fh>;
+      return unless @sorted;
+    }
+    catch {
+      return if /No such file/i;      # no big deal, nothing to sort.
+      die $_ if /Permission denied/i; # could be a problem, rethrow
+    }
+    finally {
+      # return *not* supported here.
+      close $fh if $fh;
+    }
+
+    return reverse @sorted;
+  }
+
+  my @r1 = revsort_file $0;                   # this file, sorted and reversed
+  my @r2 = revsort_file '/non/existent.file'; # empty list (no need to reverse)
+  my @r3 = revsort_file '/dev/autofs';        # should throw exception on mac
+                                              # and linux unless you're root.
+=head1 DESCRIPTION
+
+This is my attempt at pasting over the one major issue I have with Try::Tiny:
+The fact that, despite *looking* like an actual language extension, it does
+not *behave* like one.
+
+Now, don't get me wrong. I <3 Try::Tiny a whole lot and use it all over the
+place. I've also read every line of that code and understand fully why it is
+the way it is. And it does everything it says on the tin quickly and reliably
+with 100% pure-perl, uses no compiled/XS extensions, nothing but core modules
+and works on versions of perl back to 5.6!
+
+That is truly good stuff, and I don't want it to change, one bit.
+
+However, I hurt (just a little) inside whever I have to explain to somebody
+that using C<return> in a L<Try::Tiny> block does *not* leave the sub
+containing the try block! Furthermore, it also annoys the non-perl hackers who
+I try to turn on to perl (and some are coming to like it!) when something they
+see as so basic simply doesn't DWIM. Some even understand *why* it works the
+way it does, but it's just "Yet Another Nasty Perl Inconsistency".
+
+This module aims to do two things:
+
+=over 4
+
+=item Make the use of C<return> in a try-block DWIM
+
+=item Eliminate the need for the terminating semicolon at the end of the try/catch/finally construct;
+
+=back
+
+That's it, at least for now. Perhaps more can be glommed on. However, If I
+wanted all the functionality of TryCatch, (which is another amazing module for
+this sort of thing, BTW) I'd just use that instead. I could, but its
+dependencies are quite numerous and some rather heavy for my liking.
+
+I hope to need the use of nothing outside of core-perl *except* for
+Devel::Declare and Try::Tiny. Devel::Declare does pull in a few deps, and it
+uses XS (and therefore requires a compiler) but I feel it's well worth it.
+
+=head1 LICENSE
+
+I'll put a proper license declaration here when I get dzil running on my new
+box, but this software is being released under the same terms as Perl itself
+and shall remain so.
+
+=head1 AUTHOR
+
+=over 4
+
+=item Stephen R. Scaffidi <sscaffidi@cpan.org>
+
+=back
