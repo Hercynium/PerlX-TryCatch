@@ -1,13 +1,13 @@
 
 =head1 NAME
 
-PerlX::TryCatch - Try::Tiny where return works as it ought to.
+PerlX::Syntax::TryCatch - Try::Tiny where return works as it ought to.
 
 (name still pending)
 
 =head1 SYNOPSIS
 
-  use PerlX::TryCatch; # exports try/catch/finally by default
+  use PerlX::Syntax::TryCatch; # exports try/catch/finally by default
 
   sub revsort_file {
     my ($file_name) = @_;
@@ -34,6 +34,12 @@ PerlX::TryCatch - Try::Tiny where return works as it ought to.
   my @r2 = revsort_file '/non/existent.file'; # empty list (no need to reverse)
   my @r3 = revsort_file '/dev/autofs';        # should throw exception on mac
                                               # and linux unless you're root.
+
+=head1 STATUS
+
+B<Not even alpha> - it is *not* yet feature complete, but the basic
+mechanism is now working 100%. Try blocks work as intended, but catch
+and finally block support is not-yet-existent.
 
 =head1 DESCRIPTION
 
