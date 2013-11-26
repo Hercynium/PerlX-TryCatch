@@ -98,8 +98,6 @@ sub _unformat_code {
 
 
 sub _code_before_try_block {
-  my ($ctx) = @_;
-
   return _unformat_code <<"END_CODE";
   ; # terminate the call to "try"
   # begin a bare block to constrain scope
@@ -136,6 +134,42 @@ sub _code_before_scope_injector {
   my $code_in_try_block_1 = "; \@${PST_PKG}::_EOBVAL = do {";
 }
 
+
+sub _code_after_try_block {
+  return _unformat_code <<"END_CODE";
+            # terminate the inner-most "do" block that will
+            # wrap the original try block's code
+            ;
+
+            # if "return" was not used in the original code, we will end up
+            # here. Turn _EOBVAL into an object to indicate what happened.
+            \$${PST_PKG}::_EOBVAL[0] = bless [\@${PST_PKG}::_EOBVAL], "$EOB_PKG";
+
+          }  # end of sub passed to _run_with_context
+        );   # end of call to _run_with_context
+      }      # end of sub passed to Try::Tiny::try
+END_CODE
+}
+
+
+sub _code_after_all_blocks {
+  return _unformat_code <<"END_CODE";
+    # terminate the try-catch-finally construct (technically it's all just one
+    # "statement" - all these blocks are just arguments to tt_try!)
+    ;
+
+    # we're back in the outer-most bare block, in the original sub. Look for
+    # the sentinel object to determine if return was (not) used in any of the
+    # try-catch blocks. If the sentinel is absent, use return now, with the
+    # value we captured and the correct context.
+    (\$${PST_PKG}::_WANTARRAY ? return \@${PST_PKG}::_RETVAL : return \$${PST_PKG}::_RETVAL[0])
+      if ref(\$${PST_PKG}::_EOBVAL[0]) ne "$EOB_PKG";
+
+  };  # terminate the final, outer-most block.
+END_CODE
+}
+
+
 # this is the code the scope injector will be, um... injecting.
 sub _code_in_scope_injector {
   my ($ctx) = @_;
@@ -162,38 +196,31 @@ sub _code_in_try_block {
 }
 
 
-sub _code_after_try_block {
-  return _unformat_code <<"END_CODE";
-            # terminate the inner-most "do" block that will
-            # wrap the original try block's code
-            ;
 
-            # if "return" was not used in the original code, we will end up
-            # here. Turn _EOBVAL into an object to indicate what happened.
-            \$${PST_PKG}::_EOBVAL[0] = bless [\@${PST_PKG}::_EOBVAL], "$EOB_PKG";
+sub inject_code {
+  my ($ctx, @lines) = @_;
 
-          }  # end of sub passed to _run_with_context
-        );   # end of call to _run_with_context
-      }      # end of sub passed to Try::Tiny::try
-END_CODE
+  my $code = _unformat_code @lines;
+
+  # retrieve the code that's been read, but not parsed so far (I think?)
+  my $linestr = $ctx->get_linestr;
+
+  return unless defined $linestr;  # Maybe this should be an error?
+
+  # splice in the code at the current offset
+  substr( $linestr, $ctx->offset, 0 ) = $code;
+
+  # and update the line in the parser.
+  $ctx->set_linestr( $linestr );
+
+  # adjust the offset for the stuff we just spliced in
+  $ctx->inc_offset( length $code );
+
+  return 1;
 }
 
-sub _code_after_all_blocks {
-  return _unformat_code <<"END_CODE";
-    # terminate the try-catch-finally construct (technically it's all just one
-    # "statement" - all these blocks are just arguments to tt_try!)
-    ;
 
-    # we're back in the outer-most bare block, in the original sub. Look for
-    # the sentinel object to determine if return was (not) used in any of the
-    # try-catch blocks. If the sentinel is absent, use return now, with the
-    # value we captured and the correct context.
-    (\$${PST_PKG}::_WANTARRAY ? return \@${PST_PKG}::_RETVAL : return \$${PST_PKG}::_RETVAL[0])
-      if ref(\$${PST_PKG}::_EOBVAL[0]) ne "$EOB_PKG";
 
-  };  # terminate the final, outer-most block.
-END_CODE
-}
 
 # this is what gets called by Devel::Declare when the "try" sub is encountered
 # in code using this module. It's where all the heavy lifting happens to
@@ -206,9 +233,6 @@ sub _transform_try {
   # move past it.
   $ctx->skip_declarator or croak "Could not parse try block";
 
-  # retrieve the code that's been read, but not parsed so far (I think?)
-  my $linestr = $ctx->get_linestr;
-  return unless defined $linestr;  # Maybe this should be an error?
 
   # turn the try sub we're transforming into a no-op with
   # no arguments, since that's how it will be used shortly...
@@ -218,16 +242,10 @@ sub _transform_try {
   # get the code to inject after the "try" and before the "{"
   my $code_before_try_block = $ctx->_code_before_try_block;
 
-  #print "Injecting Before Try Block: [$pre_try_code]\n";
+  #print "Injecting Before Try Block: [$code_before_try_block]\n";
 
-  # since our offset should be right after the "try" token (and therefore,
-  # hopefully, right before a "{" token), inject our code right there...
-  substr( $linestr, $ctx->offset, 0 ) = $code_before_try_block;
-  # and update the line in the parser.
-  $ctx->set_linestr( $linestr );
-
-  # adjust the offset for the stuff we just spliced in
-  $ctx->inc_offset( length $code_before_try_block );
+  $ctx->inject_code( $code_before_try_block )
+    or die "No code after try token";
 
 
   # get the code to inject *into* the original try block, right after the "{"
@@ -243,6 +261,8 @@ sub _transform_try {
     or croak "Could not find a code block after try";
 
 }
+
+
 
 
 1 && q{ I'm a very, very bad man. }; # truth
