@@ -87,33 +87,20 @@ sub _run_with_context {
 # Devel::Declare needs it all in one line. Use this sub to "unformat" it.
 sub _unformat_code {
   my ($code) = map {
-    s/#[^\n]*//msg; # remove comments
-    s/\n//msg;      # remove newlines
-    s/\s+/ /msg;    # collapse whitespace
+    s/(?<!$)#[^\n]*//msg;  # remove comments (but avoid clobbering $#array)
+    s/\n//msg;             # remove newlines
+    s/\s+/ /msg;           # collapse whitespace
     $_;
   } join ' ', @_;
   return $code;
 }
 
-sub _transform_try {
-
-  my $ctx = "$PST_PKG"->new->init( @_ );
-
-  # turn the try sub we're transforming into a no-op with
-  # no arguments, since that's how it will be used shortly...
-  $ctx->shadow( sub () { } );
-
-  $ctx->skip_declarator
-    or croak "Could not parse try block";
-
-  my $linestr = $ctx->get_linestr;
-  return unless defined $linestr;  # Maybe this should be an error?
-
-  ### modify the initial "call" to try()...
 
 
-  # inject this code after the "try" and before the "{"
-  my $code_before_try_block = _unformat_code <<"END_CODE";
+sub _code_before_try_block {
+  my ($ctx) = @_;
+
+  return _unformat_code <<"END_CODE";
   ; # terminate the call to "try"
   # begin a bare block to constrain scope
   {
@@ -136,28 +123,47 @@ sub _transform_try {
           \$${PST_PKG}::_WANTARRAY,
           sub  # the opening brace of the original try block will be right here.
 END_CODE
-
-  #print "Injecting Before Try Block: [$pre_try_code]\n";
-
-  substr( $linestr, $ctx->offset, 0 ) = $code_before_try_block;
-  $ctx->set_linestr( $linestr );
-
-  # adjust the offset for the stuff we just spliced in
-  $ctx->inc_offset( length $code_before_try_block );
+}
 
 
-  ### Here's where things get realy funky. I'll explain it when I'm sober.
-
+sub _code_before_scope_injector {
+  my ($ctx) = @_;
 
   # start a "do" block at the top of the try block (now a sub block). This do
   # block now "wraps" the original contents of the "try" block. If return is
   # not used within, the value of the last statement evaluated will be saved
   # in the localised _EOBVAL var.
   my $code_in_try_block_1 = "; \@${PST_PKG}::_EOBVAL = do {";
+}
+
+# this is the code the scope injector will be, um... injecting.
+sub _code_in_scope_injector {
+  my ($ctx) = @_;
+
+  # TODO: rework this to support (optional) catch & finally blocks
+  $ctx->_code_after_try_block . $ctx->_code_after_all_blocks
+}
+
+# generate code to inject the "after" code immediately after the closing
+# brace of the inner "do" block is parsed:
+sub _code_for_scope_injector {
+  my ($ctx) = @_;
+
+  return $ctx->scope_injector_call( $ctx->_code_in_scope_injector );
+}
+
+sub _code_in_try_block {
+  my ($ctx) = @_;
+
+  return _unformat_code(
+    $ctx->_code_before_scope_injector,
+    $ctx->_code_for_scope_injector,
+  );
+}
 
 
-  # this code will get injected *after* the end of the try block
-  my $code_after_try_block = _unformat_code <<"END_CODE";
+sub _code_after_try_block {
+  return _unformat_code <<"END_CODE";
             # terminate the inner-most "do" block that will
             # wrap the original try block's code
             ;
@@ -170,11 +176,12 @@ END_CODE
         );   # end of call to _run_with_context
       }      # end of sub passed to Try::Tiny::try
 END_CODE
+}
 
-
-  # this code is injected after *all* try/catch/finally blocks in the construct
-  my $code_after_all_blocks = _unformat_code <<"END_CODE";
-    # terminate the last sub-block in our try-catch-finally construct
+sub _code_after_all_blocks {
+  return _unformat_code <<"END_CODE";
+    # terminate the try-catch-finally construct (technically it's all just one
+    # "statement" - all these blocks are just arguments to tt_try!)
     ;
 
     # we're back in the outer-most bare block, in the original sub. Look for
@@ -186,22 +193,52 @@ END_CODE
 
   };  # terminate the final, outer-most block.
 END_CODE
+}
+
+# this is what gets called by Devel::Declare when the "try" sub is encountered
+# in code using this module. It's where all the heavy lifting happens to
+# transform the try-block into valid, working perl.
+sub _transform_try {
+
+  my $ctx = "$PST_PKG"->new->init( @_ );
+
+  # our current position should be *just* before the "try" token.
+  # move past it.
+  $ctx->skip_declarator or croak "Could not parse try block";
+
+  # retrieve the code that's been read, but not parsed so far (I think?)
+  my $linestr = $ctx->get_linestr;
+  return unless defined $linestr;  # Maybe this should be an error?
+
+  # turn the try sub we're transforming into a no-op with
+  # no arguments, since that's how it will be used shortly...
+  $ctx->shadow( sub () { } );
 
 
-  # generate code to inject the "after" code immediately after the closing
-  # brace of the inner "do" block is parsed:
-  my $code_in_try_block_2 =
-    $ctx->scope_injector_call( $code_after_try_block . $code_after_all_blocks );
+  # get the code to inject after the "try" and before the "{"
+  my $code_before_try_block = $ctx->_code_before_try_block;
+
+  #print "Injecting Before Try Block: [$pre_try_code]\n";
+
+  # since our offset should be right after the "try" token (and therefore,
+  # hopefully, right before a "{" token), inject our code right there...
+  substr( $linestr, $ctx->offset, 0 ) = $code_before_try_block;
+  # and update the line in the parser.
+  $ctx->set_linestr( $linestr );
+
+  # adjust the offset for the stuff we just spliced in
+  $ctx->inc_offset( length $code_before_try_block );
 
 
-  # stick everything together and make sure it's all on one line...
-  my $code_in_try_block =
-    _unformat_code( $code_in_try_block_1, $code_in_try_block_2 );
-
+  # get the code to inject *into* the original try block, right after the "{"
+  # this code includes code that will inject more code at the end of the try
+  # block using an end-of-scope hook into the parser.
+  my $code_in_try_block = $ctx->_code_in_try_block;
 
   #print "Injecting Into Try Block: [$code_in_try_block]\n";
 
-  # finally, inject it at the beginning of the inner try/sub block
+  # if the parser's current position isn't at the beginning of a block, its
+  # not safe - the user probably has a bare "try" in their code?
   $ctx->inject_if_block( $code_in_try_block )
     or croak "Could not find a code block after try";
 
