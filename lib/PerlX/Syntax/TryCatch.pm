@@ -1,6 +1,6 @@
 package PerlX::Syntax::TryCatch;
 
-# ABSTRACT try-catch-finally where 'return' actually returns from the sub
+# ABSTRACT Try::Tiny where 'return' works as it ought to.
 
 use strict;
 use warnings;
@@ -36,7 +36,8 @@ use vars qw/ @_RETVAL @_EOBVAL $_WANTARRAY /;
 $Carp::Internal{ $_ } = 1 for qw/ Devel::Declare Devel::Declare::Context::Simple /;
 
 
-# TODO: setup imports for catch and finally
+### TODO: support "catch" and finally"
+
 sub import {
   my $class  = shift;
   my $caller = caller;
@@ -45,6 +46,9 @@ sub import {
   {
     no strict 'refs';
     *{"${caller}::try"} = sub (&) {};
+
+    # install TT's subs in this package with different names so they don't
+    # confuse Devel::Decare (or perl's parser)
     *{"${PST_PKG}::tt_$_"} = \&{"Try::Tiny::$_"} for qw/ try catch finally /;
   }
 
@@ -63,7 +67,7 @@ sub _run_with_context {
   my $wantarray = shift;
   my $code      = shift;
 
-  croak __PACKAGE__ . "::_run_with_context *must* be run in list context"
+  die "$PST_PKG::_run_with_context *must* be run in list context"
     unless wantarray;
 
   if ( $wantarray ) {
@@ -109,19 +113,19 @@ sub _transform_try {
 
 
   # inject this code after the "try" and before the "{"
-  my $pre_try_code = _unformat_code <<"END_CODE";
+  my $code_before_try_block = _unformat_code <<"END_CODE";
   ; # terminate the call to "try"
-  # begin a "do" block to constrain scope
-  do {
+  # begin a bare block to constrain scope
+  {
 
     # capture the current sub's return context
     local \$${PST_PKG}::_WANTARRAY = wantarray;
 
     # localise these to catch various values we will use later...
-    local \@${PST_PKG}::_RETVAL;
-    local \@${PST_PKG}::_EOBVAL;
+    local \@${PST_PKG}::_RETVAL;  # value returned by TT::try
+    local \@${PST_PKG}::_EOBVAL;  # "End Of Block" value
 
-    # call TT's try, catching the return value in _retval. Note that
+    # call TT's try, saving the return value in _RETVAL. Note that
     # we're starting a new anonymous sub here, to pass to TT::try
     \@${PST_PKG}::_RETVAL =
       ${PST_PKG}::tt_try {
@@ -130,60 +134,75 @@ sub _transform_try {
         # _run_with_context, which does what it says on the tin...
         return ${PST_PKG}::_run_with_context(
           \$${PST_PKG}::_WANTARRAY,
-          sub # the opening brace of the original try block will be right here.
+          sub  # the opening brace of the original try block will be right here.
 END_CODE
 
   #print "Injecting Before Try Block: [$pre_try_code]\n";
 
-  substr( $linestr, $ctx->offset, 0 ) = $pre_try_code;
+  substr( $linestr, $ctx->offset, 0 ) = $code_before_try_block;
   $ctx->set_linestr( $linestr );
 
   # adjust the offset for the stuff we just spliced in
-  $ctx->inc_offset( length $pre_try_code );
+  $ctx->inc_offset( length $code_before_try_block );
+
+
+  ### Here's where things get realy funky. I'll explain it when I'm sober.
+
+
+  # start a "do" block at the top of the try block (now a sub block). This do
+  # block now "wraps" the original contents of the "try" block. If return is
+  # not used within, the value of the last statement evaluated will be saved
+  # in the localised _EOBVAL var.
+  my $code_in_try_block_1 = "; \@${PST_PKG}::_EOBVAL = do {";
 
 
   # this code will get injected *after* the end of the try block
-  my $post_try_code = _unformat_code <<"END_CODE";
+  my $code_after_try_block = _unformat_code <<"END_CODE";
             # terminate the inner-most "do" block that will
             # wrap the original try block's code
             ;
 
             # if "return" was not used in the original code, we will end up
-            # here. return this object as a sentinel to indicate what happened.
+            # here. Turn _EOBVAL into an object to indicate what happened.
             \$${PST_PKG}::_EOBVAL[0] = bless [\@${PST_PKG}::_EOBVAL], "$EOB_PKG";
 
-          } # end of sub passed to _run_with_context
-        );  # end of call to _run_with_context
-      }     # end of sub passed to Try::Tiny::try
+          }  # end of sub passed to _run_with_context
+        );   # end of call to _run_with_context
+      }      # end of sub passed to Try::Tiny::try
 END_CODE
 
-  # TODO: detect the use of "catch" and/or "finally"
-  my $post_post_try_code = _unformat_code <<"END_CODE";
-    # terminate the last block in our try-catch-finally construct
+
+  # this code is injected after *all* try/catch/finally blocks in the construct
+  my $code_after_all_blocks = _unformat_code <<"END_CODE";
+    # terminate the last sub-block in our try-catch-finally construct
     ;
 
-    # we're back in the outer-most do-block, in the original sub. If return was
-    # used in any of the try-catch blocks, return the value we captured from here,
-    # using the correct context.
+    # we're back in the outer-most bare block, in the original sub. Look for
+    # the sentinel object to determine if return was (not) used in any of the
+    # try-catch blocks. If the sentinel is absent, use return now, with the
+    # value we captured and the correct context.
     (\$${PST_PKG}::_WANTARRAY ? return \@${PST_PKG}::_RETVAL : return \$${PST_PKG}::_RETVAL[0])
       if ref(\$${PST_PKG}::_EOBVAL[0]) ne "$EOB_PKG";
 
-  }; # terminate the final, outer-most do block.
+  };  # terminate the final, outer-most block.
 END_CODE
 
-  ### Here's where things get realy funky. I'll explain it when I'm sober.
 
-  # inject this code after the "{" at the top of the original "try" block
-  my $in_try_code = _unformat_code(
-    # start a "do" block at the top of the eval block
-    "; \@${PST_PKG}::_EOBVAL = do {" .
-    # add code to inject the following right after the closing brace of the "do" block:
-    $ctx->scope_injector_call( $post_try_code . $post_post_try_code )
-  );
+  # generate code to inject the "after" code immediately after the closing
+  # brace of the inner "do" block is parsed:
+  my $code_in_try_block_2 =
+    $ctx->scope_injector_call( $code_after_try_block . $code_after_all_blocks );
 
-  #print "Injecting Into Try Block: [$in_try_code]\n";
 
-  $ctx->inject_if_block( $in_try_code )
+  # stick everything together and make sure it's all on one line...
+  my $code_in_try_block =
+    _unformat_code( $code_in_try_block_1, $code_in_try_block_2 );
+
+
+  #print "Injecting Into Try Block: [$code_in_try_block]\n";
+
+  # finally, inject it at the beginning of the inner try/sub block
+  $ctx->inject_if_block( $code_in_try_block )
     or croak "Could not find a code block after try";
 
 }
